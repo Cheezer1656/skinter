@@ -1,0 +1,7 @@
+tensorflow[and-cuda]
+tensorflow-text
+pandas
+numpy
+matplotlib
+keras-hub
+scikit-learn

@@ -1,0 +1,39 @@
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import DenseNet121
+from tensorflow.keras.applications.densenet import preprocess_input
+
+from lib import Experiment
+
+NUM_CLASSES = 7
+
+base_model = DenseNet121(
+    weights="imagenet",
+    include_top=False,
+    input_shape=(224, 224, 3)
+)
+
+freeze_ratio = 0.8
+
+for layer in base_model.layers[:int(len(base_model.layers) * freeze_ratio)]:
+    layer.trainable = False
+
+for layer in base_model.layers[int(len(base_model.layers) * freeze_ratio):]:
+    layer.trainable = True
+
+dense_model = models.Sequential([
+
+    base_model,
+
+    layers.GlobalAveragePooling2D(),
+
+    layers.Dense(256,activation="relu"),
+
+    layers.Dropout(0.5),
+
+    layers.Dense(NUM_CLASSES,activation="softmax")
+])
+
+baseline = Experiment("baseline_densenet", dense_model, preprocess_input)
+baseline.load_data()
+baseline.train()
+print("Macro F1:", baseline.save_results())
