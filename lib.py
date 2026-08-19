@@ -41,6 +41,9 @@ IMG_SIZE = 224
 BATCH_SIZE = 32
 MAJORITY_LABEL_NUM = 5
 
+# One trial per seed. Each trial writes into results/<name>/trial_<n>/
+SEEDS = [42, 1337, 2024]
+
 def preprocess_image(data_augmentation, preprocess_input, path, label, augment=False):
     image = tf.io.read_file(path)
     image = tf.image.decode_jpeg(image, channels=3)
@@ -116,19 +119,36 @@ class Experiment:
             ], name="data_augmentation")
         ):
         self.name = name
-        self.model = model
+
+        if isinstance(model, tf.keras.Model):
+            raise TypeError(
+                "model must be a callable that builds and returns a model, not an "
+                "already-built one, so each trial gets its own initialisation"
+            )
+
+        if not callable(model):
+            raise TypeError("model must be a callable that builds and returns a model")
+
+        self.model = None
+        self.build_model = model
+
         self.create_dataset = lambda df, augment = True: create_dataset(df, data_augmentation, preprocess_input, augment=augment)
         self.optimizer = optimizer
         self.loss = loss
         self.monitor = monitor
         self.monitor_mode: typing.Literal['auto', 'min', 'max'] = monitor_mode
 
+        self.histories = []
+        self.reports = []
+        self.macro_f1s = []
+
     def load_data(self):
-        train_df = pd.read_csv(TRAIN_CSV)
+        self.train_df = pd.read_csv(TRAIN_CSV)
         val_df = pd.read_csv(VAL_CSV)
         test_df = pd.read_csv(TEST_CSV)
 
-        self.train_dataset = self.create_dataset(train_df, augment=True)
+        # The training pipeline is rebuilt per trial so shuffling and augmentation
+        # follow that trial's seed. Val/test are deterministic, so build them once.
         self.val_dataset = self.create_dataset(val_df, augment=False)
         self.test_dataset = self.create_dataset(test_df, augment=False)
 
@@ -136,51 +156,89 @@ class Experiment:
         weights = compute_class_weight(
             class_weight="balanced",
             classes=class_indices,
-            y=train_df["label"].values
+            y=self.train_df["label"].values
         )
         self.class_weights = dict(zip(class_indices, weights))
-        
+
         # Weird side effect but it's okay
         self.path = "results/" + self.name + "/"
 
+    def new_model(self):
+        model = self.build_model()
+
+        if not isinstance(model, tf.keras.Model):
+            raise TypeError(f"model callable returned {type(model).__name__}, expected a keras Model")
+
+        return model
+
+    # A fresh optimizer per trial, so momentum/step count don't carry over.
+    # Read at train time because the vit/*.py variants swap the optimizer out
+    # after the Experiment is constructed.
+    def new_optimizer(self):
+        return type(self.optimizer).from_config(self.optimizer.get_config())
+
     def train(self):
-        self.model.compile(
-                optimizer=self.optimizer,
-                loss=self.loss,
-                metrics=["accuracy", tf.keras.metrics.F1Score(average="macro", name="macro_f1")]
-            )
-
         os.makedirs(self.path, exist_ok=True)
-        checkpoint_cb = ModelCheckpoint(
-                filepath=self.path + "model.keras",
-                monitor=self.monitor,
-                save_best_only=True,
-                mode=self.monitor_mode,
-                verbose=1
-            )
 
-        early_stopping_cb = EarlyStopping(
-                monitor=self.monitor,
-                mode=self.monitor_mode,
-                patience=5,
-                restore_best_weights=True,
-                verbose=1
-            )
+        self.histories = []
+        self.reports = []
+        self.macro_f1s = []
 
-        self.history = self.model.fit(
-                self.train_dataset,
-                validation_data=self.val_dataset,
-                epochs=50,
-                callbacks=[checkpoint_cb, early_stopping_cb],
-                class_weight=self.class_weights
-            )
+        for trial, seed in enumerate(SEEDS, start=1):
+            print(f"\n===== {self.name}: trial {trial}/{len(SEEDS)} (seed {seed}) =====")
 
-    # Saves results and returns the macro F1 score
-    def save_results(self):
-        history_df = pd.DataFrame(self.history.history)
+            tf.keras.utils.set_random_seed(seed)
+
+            trial_path = self.path + f"trial_{trial}/"
+            os.makedirs(trial_path, exist_ok=True)
+
+            train_dataset = self.create_dataset(self.train_df, augment=True)
+
+            self.model = self.new_model()
+            self.model.compile(
+                    optimizer=self.new_optimizer(),
+                    loss=self.loss,
+                    metrics=["accuracy", tf.keras.metrics.F1Score(average="macro", name="macro_f1")]
+                )
+
+            checkpoint_cb = ModelCheckpoint(
+                    filepath=trial_path + "model.keras",
+                    monitor=self.monitor,
+                    save_best_only=True,
+                    mode=self.monitor_mode,
+                    verbose=1
+                )
+
+            early_stopping_cb = EarlyStopping(
+                    monitor=self.monitor,
+                    mode=self.monitor_mode,
+                    patience=5,
+                    restore_best_weights=True,
+                    verbose=1
+                )
+
+            history = self.model.fit(
+                    train_dataset,
+                    validation_data=self.val_dataset,
+                    epochs=50,
+                    callbacks=[checkpoint_cb, early_stopping_cb],
+                    class_weight=self.class_weights
+                )
+
+            self.histories.append(history)
+
+            report, macro_f1 = self.save_trial_results(history, trial_path)
+            self.reports.append(report)
+            self.macro_f1s.append(macro_f1)
+
+            print(f"Trial {trial} macro F1: {macro_f1}")
+
+    # Writes one trial's files, returns its report dict and macro F1 score
+    def save_trial_results(self, history, trial_path):
+        history_df = pd.DataFrame(history.history)
 
         history_df.to_csv(
-                self.path + "history.csv",
+                trial_path + "history.csv",
                 index=False
                 )
 
@@ -197,7 +255,7 @@ class Experiment:
         cm = confusion_matrix(y_true, y_pred)
 
         # Plot and save confusion matrix
-        _, ax = plt.subplots(figsize=(8, 8))
+        fig, ax = plt.subplots(figsize=(8, 8))
 
         disp = ConfusionMatrixDisplay(
             confusion_matrix=cm,
@@ -213,7 +271,8 @@ class Experiment:
         plt.title(self.name + " Confusion Matrix")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.savefig(self.path + "confusion_matrix.png", dpi=300, bbox_inches="tight")
+        plt.savefig(trial_path + "confusion_matrix.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
         report_dict = classification_report(
             y_true,
@@ -224,6 +283,37 @@ class Experiment:
 
         df = pd.DataFrame(report_dict).transpose()
 
-        df.to_csv(self.path + "classification_report.csv")
+        df.to_csv(trial_path + "classification_report.csv")
 
-        return f1_score(y_true, y_pred, average="macro")
+        return report_dict, f1_score(y_true, y_pred, average="macro")
+
+    # Averages the trials' classification reports and returns the averaged macro F1 score
+    def save_results(self):
+        if not self.reports:
+            raise RuntimeError("no trials to average, call train() first")
+
+        def averaged_row(key):
+            return {
+                metric: float(np.mean([report[key][metric] for report in self.reports]))
+                for metric in ("precision", "recall", "f1-score", "support")
+            }
+
+        macro_avg = averaged_row("macro avg")
+        weighted_avg = averaged_row("weighted avg")
+
+        accuracy = {
+            "precision": np.nan,
+            "recall": np.nan,
+            "f1-score": float(np.mean([report["accuracy"] for report in self.reports])),
+            "support": macro_avg["support"]
+        }
+
+        averaged = pd.DataFrame(
+            [accuracy, macro_avg, weighted_avg],
+            index=["accuracy", "macro avg", "weighted avg"],
+            columns=["precision", "recall", "f1-score", "support"]
+        )
+
+        averaged.to_csv(self.path + "averaged_report.csv")
+
+        return float(np.mean(self.macro_f1s))

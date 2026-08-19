@@ -6,34 +6,37 @@ from lib import Experiment
 
 NUM_CLASSES = 7
 
-base_model = ResNet50(
-    weights="imagenet",
-    include_top=False,
-    input_shape=(224, 224, 3)
-)
+FREEZE_RATIO = 0.8
 
-freeze_ratio = 0.8
+def build_model():
+    base_model = ResNet50(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(224, 224, 3)
+    )
 
-for layer in base_model.layers[:int(len(base_model.layers) * freeze_ratio)]:
-    layer.trainable = False
+    freeze_until = int(len(base_model.layers) * FREEZE_RATIO)
 
-for layer in base_model.layers[int(len(base_model.layers) * freeze_ratio):]:
-    layer.trainable = True
+    for layer in base_model.layers[:freeze_until]:
+        layer.trainable = False
 
-res_model = models.Sequential([
+    for layer in base_model.layers[freeze_until:]:
+        layer.trainable = True
 
-    base_model,
+    return models.Sequential([
 
-    layers.GlobalAveragePooling2D(),
+        base_model,
 
-    layers.Dense(256,activation="relu"),
+        layers.GlobalAveragePooling2D(),
 
-    layers.Dropout(0.5),
+        layers.Dense(256,activation="relu"),
 
-    layers.Dense(NUM_CLASSES,activation="softmax")
-])
+        layers.Dropout(0.5),
 
-baseline = Experiment("baseline_resnet", res_model, preprocess_input) 
+        layers.Dense(NUM_CLASSES,activation="softmax")
+    ])
+
+baseline = Experiment("baseline_resnet", build_model, preprocess_input)
 baseline.load_data()
 baseline.train()
 print("Macro F1: ", baseline.save_results())
