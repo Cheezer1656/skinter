@@ -39,12 +39,11 @@ CLASS_NAMES = [
 
 IMG_SIZE = 224
 BATCH_SIZE = 32
-MAJORITY_LABEL_NUM = 5
 
 # One trial per seed. Each trial writes into results/<name>/trial_<n>/
 SEEDS = [42, 1337, 2024]
 
-def preprocess_image(data_augmentation, preprocess_input, path, label, augment=False):
+def load_image(path, label):
     image = tf.io.read_file(path)
     image = tf.image.decode_jpeg(image, channels=3)
 
@@ -53,29 +52,7 @@ def preprocess_image(data_augmentation, preprocess_input, path, label, augment=F
         (IMG_SIZE, IMG_SIZE)
     )
 
-    image = tf.cast(
-        image,
-        tf.float32
-    )
-
-
-    if augment:
-        is_minority = tf.not_equal(
-            label,
-            MAJORITY_LABEL_NUM
-        )
-
-        image = tf.cond(
-            is_minority,
-            lambda: data_augmentation(image, training=True),
-            lambda: image
-        )
-
-    image = preprocess_input(image)
-
-    label = tf.one_hot(label, depth=len(CLASS_NAMES))
-
-    return image, label
+    return tf.cast(image, tf.uint8), label
 
 # %%
 def create_dataset(df, data_augmentation, preprocess_input, augment=False):
@@ -84,17 +61,38 @@ def create_dataset(df, data_augmentation, preprocess_input, augment=False):
         (df["path"].values, df["label"].values)
     )
 
-
-    if augment:
-        dataset = dataset.shuffle(buffer_size=len(df))
-
-
     dataset = dataset.map(
-        lambda path, label: preprocess_image(data_augmentation, preprocess_input, path, label, augment),
+        load_image,
         num_parallel_calls=tf.data.AUTOTUNE
     )
 
+    # Cache sits above the shuffle and the augmentation so that neither gets
+    # frozen into the cache after the first epoch.
     dataset = dataset.cache()
+
+    if augment:
+        dataset = dataset.shuffle(
+            buffer_size=len(df),
+            reshuffle_each_iteration=True
+        )
+
+    def finalize(image, label):
+        image = tf.cast(image, tf.float32)
+
+        if augment:
+            image = data_augmentation(image, training=True)
+
+        image = preprocess_input(image)
+
+        label = tf.one_hot(label, depth=len(CLASS_NAMES))
+
+        return image, label
+
+    dataset = dataset.map(
+        finalize,
+        num_parallel_calls=tf.data.AUTOTUNE
+    )
+
     # 4. Batch and Prefetch
     dataset = dataset.batch(BATCH_SIZE)
     dataset = dataset.prefetch(buffer_size=tf.data.AUTOTUNE)
