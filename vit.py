@@ -1,8 +1,10 @@
+import sys
+
+from lib import Experiment
+
 from tensorflow.keras import Model, layers
 from tensorflow.keras.applications.imagenet_utils import preprocess_input
 import keras_hub
-
-from lib import Experiment
 
 NUM_CLASSES = 7
 
@@ -67,8 +69,14 @@ vit_model = Model(
     outputs=outputs
 )
 
-baseline = Experiment("baseline_vit", vit_model, preprocess_input)
-baseline.load_data()
+experiment = Experiment("vit_", vit_model, preprocess_input)
 
-baseline.train()
-print("Macro F1 Score: " + str(baseline.save_results()))
+name = sys.argv[1]
+if name != "baseline":
+    with open(f"vit/{name}.py", "r") as f:
+        code = f.read()
+    exec(code)
+
+experiment.load_data()
+experiment.train()
+print("Macro F1 Score: " + str(experiment.save_results()))

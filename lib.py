@@ -1,5 +1,9 @@
 import os
 import typing
+import warnings
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 import tensorflow as tf
 import pandas as pd
@@ -13,6 +17,10 @@ from sklearn.metrics import (
         ConfusionMatrixDisplay,
         f1_score,
     )
+from sklearn.utils.class_weight import compute_class_weight
+
+warnings.filterwarnings("ignore")
+tf.get_logger().setLevel("ERROR")
 
 DATA_PATH = "processed/"
 TRAIN_CSV = DATA_PATH + "train.csv"
@@ -96,10 +104,10 @@ class Experiment:
             name,
             model,
             preprocess_input,
-            optimizer = tf.keras.optimizers.Adam(0.00001),
-            loss = tf.keras.losses.CategoricalCrossentropy(),
-            monitor = "val_loss",
-            monitor_mode: typing.Literal['auto', 'min', 'max'] = "min",
+            optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4, global_clipnorm=1.0),
+            loss = tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+            monitor = "val_macro_f1",
+            monitor_mode: typing.Literal['auto', 'min', 'max'] = "max",
             data_augmentation = tf.keras.Sequential([
                 tf.keras.layers.RandomFlip("horizontal_and_vertical"),
                 tf.keras.layers.RandomRotation(0.2),
@@ -124,6 +132,17 @@ class Experiment:
         self.val_dataset = self.create_dataset(val_df, augment=False)
         self.test_dataset = self.create_dataset(test_df, augment=False)
 
+        class_indices = np.arange(len(CLASS_NAMES))
+        weights = compute_class_weight(
+            class_weight="balanced",
+            classes=class_indices,
+            y=train_df["label"].values
+        )
+        self.class_weights = dict(zip(class_indices, weights))
+        
+        # Weird side effect but it's okay
+        self.path = "results/" + self.name + "/"
+
     def train(self):
         self.model.compile(
                 optimizer=self.optimizer,
@@ -131,9 +150,9 @@ class Experiment:
                 metrics=["accuracy", tf.keras.metrics.F1Score(average="macro", name="macro_f1")]
             )
 
-        os.makedirs(self.name, exist_ok=True)
+        os.makedirs(self.path, exist_ok=True)
         checkpoint_cb = ModelCheckpoint(
-                filepath=self.name + "/model.keras",
+                filepath=self.path + "model.keras",
                 monitor=self.monitor,
                 save_best_only=True,
                 mode=self.monitor_mode,
@@ -152,7 +171,8 @@ class Experiment:
                 self.train_dataset,
                 validation_data=self.val_dataset,
                 epochs=50,
-                callbacks=[checkpoint_cb, early_stopping_cb]
+                callbacks=[checkpoint_cb, early_stopping_cb],
+                class_weight=self.class_weights
             )
 
     # Saves results and returns the macro F1 score
@@ -160,7 +180,7 @@ class Experiment:
         history_df = pd.DataFrame(self.history.history)
 
         history_df.to_csv(
-                self.name + "/history.csv",
+                self.path + "history.csv",
                 index=False
                 )
 
@@ -193,7 +213,7 @@ class Experiment:
         plt.title(self.name + " Confusion Matrix")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.savefig(self.name + "/confusion_matrix.png", dpi=300, bbox_inches="tight")
+        plt.savefig(self.path + "confusion_matrix.png", dpi=300, bbox_inches="tight")
 
         report_dict = classification_report(
             y_true,
@@ -204,6 +224,6 @@ class Experiment:
 
         df = pd.DataFrame(report_dict).transpose()
 
-        df.to_csv(self.name + "/classification_report.csv")
+        df.to_csv(self.path + "classification_report.csv")
 
         return f1_score(y_true, y_pred, average="macro")
