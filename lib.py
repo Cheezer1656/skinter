@@ -2,7 +2,7 @@ import os
 import typing
 import warnings
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["KMP_AFFINITY"] = "noverbose"
 
@@ -117,7 +117,7 @@ class Experiment:
             optimizer = None,
             loss = None,
             monitor = "val_macro_f1",
-            monitor_mode: typing.Literal['auto', 'min', 'max'] = "max",
+            monitor_mode: typing.Literal["auto", "min", "max"] = "max",
             data_augmentation = None
         ):
         self.name = name
@@ -157,7 +157,7 @@ class Experiment:
             label_smoothing=0.1
         )
         self.monitor = monitor
-        self.monitor_mode: typing.Literal['auto', 'min', 'max'] = monitor_mode
+        self.monitor_mode: typing.Literal["auto", "min", "max"] = monitor_mode
 
         self.histories = []
         self.reports = []
