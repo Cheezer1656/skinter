@@ -2,8 +2,6 @@ from tensorflow.keras import layers, models
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.applications.resnet50 import preprocess_input
 
-from lib import Experiment
-
 NUM_CLASSES = 7
 
 FREEZE_RATIO = 0.8
@@ -35,8 +33,3 @@ def build_model():
 
         layers.Dense(NUM_CLASSES,activation="softmax")
     ])
-
-baseline = Experiment("baseline_resnet", build_model, preprocess_input)
-baseline.load_data()
-baseline.train()
-print("Macro F1: ", baseline.save_results())

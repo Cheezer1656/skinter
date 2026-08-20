@@ -1,7 +1,3 @@
-import sys
-
-from lib import Experiment
-
 from tensorflow.keras import Model, layers
 from tensorflow.keras.applications.imagenet_utils import preprocess_input
 import keras_hub
@@ -66,15 +62,3 @@ def build_model():
         inputs=inputs,
         outputs=outputs
     )
-
-experiment = Experiment("vit_", build_model, preprocess_input)
-
-name = sys.argv[1]
-if name != "baseline":
-    with open(f"vit/{name}.py", "r") as f:
-        code = f.read()
-    exec(code)
-
-experiment.load_data()
-experiment.train()
-print("Macro F1 Score: " + str(experiment.save_results()))

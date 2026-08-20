@@ -1,7 +1,6 @@
 from tensorflow.keras import layers, models
 from tensorflow.keras.applications import EfficientNetB0
 from tensorflow.keras.applications.efficientnet import preprocess_input
-from lib import Experiment
 
 NUM_CLASSES = 7
 
@@ -34,8 +33,3 @@ def build_model():
 
         layers.Dense(NUM_CLASSES,activation="softmax")
     ])
-
-baseline = Experiment("baseline_effnet", build_model, preprocess_input)
-baseline.load_data()
-baseline.train()
-print("Macro F1:", baseline.save_results())
