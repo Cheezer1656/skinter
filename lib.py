@@ -43,6 +43,14 @@ BATCH_SIZE = 32
 # One trial per seed. Each trial writes into results/<name>/trial_<n>/
 SEEDS = [42, 1337, 2024]
 
+def default_data_augmentation():
+    return tf.keras.Sequential([
+        tf.keras.layers.RandomFlip("horizontal_and_vertical"),
+        tf.keras.layers.RandomRotation(0.2),
+        tf.keras.layers.RandomZoom(0.1),
+        tf.keras.layers.RandomTranslation(0.05, 0.05)
+    ], name="data_augmentation")
+
 def load_image(path, label):
     image = tf.io.read_file(path)
     image = tf.image.decode_jpeg(image, channels=3)
@@ -105,16 +113,11 @@ class Experiment:
             name,
             model,
             preprocess_input,
-            optimizer = tf.keras.optimizers.Adam(learning_rate=2e-4, global_clipnorm=1.0),
-            loss = tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+            optimizer = None,
+            loss = None,
             monitor = "val_macro_f1",
             monitor_mode: typing.Literal['auto', 'min', 'max'] = "max",
-            data_augmentation = tf.keras.Sequential([
-                tf.keras.layers.RandomFlip("horizontal_and_vertical"),
-                tf.keras.layers.RandomRotation(0.2),
-                tf.keras.layers.RandomZoom(0.1),
-                tf.keras.layers.RandomTranslation(0.05, 0.05)
-            ], name="data_augmentation")
+            data_augmentation = None
         ):
         self.name = name
 
@@ -127,18 +130,45 @@ class Experiment:
         if not callable(model):
             raise TypeError("model must be a callable that builds and returns a model")
 
+        if isinstance(data_augmentation, tf.keras.Model):
+            raise TypeError(
+                "data_augmentation must be a callable that builds and returns an "
+                "augmentation pipeline, not an already-built one, so each trial "
+                "gets its own seed generators"
+            )
+
+        if data_augmentation is not None and not callable(data_augmentation):
+            raise TypeError(
+                "data_augmentation must be a callable that builds and returns an "
+                "augmentation pipeline"
+            )
+
         self.model = None
         self.build_model = model
 
-        self.create_dataset = lambda df, augment = True: create_dataset(df, data_augmentation, preprocess_input, augment=augment)
-        self.optimizer = optimizer
-        self.loss = loss
+        self.preprocess_input = preprocess_input
+        self.build_data_augmentation = data_augmentation or default_data_augmentation
+        self.optimizer = optimizer if optimizer is not None else tf.keras.optimizers.Adam(
+            learning_rate=2e-4,
+            global_clipnorm=1.0
+        )
+        self.loss = loss if loss is not None else tf.keras.losses.CategoricalCrossentropy(
+            label_smoothing=0.1
+        )
         self.monitor = monitor
         self.monitor_mode: typing.Literal['auto', 'min', 'max'] = monitor_mode
 
         self.histories = []
         self.reports = []
         self.macro_f1s = []
+
+    def create_dataset(self, df, augment=False, data_augmentation=None):
+        return create_dataset(
+            df,
+            data_augmentation,
+            self.preprocess_input,
+            augment=augment
+        )
 
     def load_data(self):
         self.train_df = pd.read_csv(TRAIN_CSV)
@@ -190,7 +220,12 @@ class Experiment:
             trial_path = self.path + f"trial_{trial}/"
             os.makedirs(trial_path, exist_ok=True)
 
-            train_dataset = self.create_dataset(self.train_df, augment=True)
+            # Built after set_random_seed so the augmentation RNG follows the seed.
+            train_dataset = self.create_dataset(
+                self.train_df,
+                augment=True,
+                data_augmentation=self.build_data_augmentation()
+            )
 
             self.model = self.new_model()
             self.model.compile(
