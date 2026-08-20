@@ -52,7 +52,7 @@ def load_image(path, label):
         (IMG_SIZE, IMG_SIZE)
     )
 
-    return tf.cast(image, tf.uint8), label
+    return tf.saturate_cast(tf.round(image), tf.uint8), label
 
 # %%
 def create_dataset(df, data_augmentation, preprocess_input, augment=False):
